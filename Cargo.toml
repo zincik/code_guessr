@@ -1,6 +1,6 @@
 [package]
 name = "code_guessr"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Test knowledge of your codebase, find the given line in valid files"
 license = "MIT"

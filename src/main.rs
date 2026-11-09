@@ -269,27 +269,59 @@ fn file_browser(
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    let usage = "Usage: code_guessr <file_extension> [directory] [--min-chars <number>]\n\
+                 Example: code_guessr rs ./src --min-chars 40\n\
+                 Recursively searches for files with the given extension.\n\
+                 --min-chars, -m  Minimum non-whitespace characters in a line (default: 40)";
+    let mut positional = Vec::new();
+    let mut min_chars = 40;
+    let mut args = env::args().skip(1);
 
-    let ext = args.get(1)
-        .map(|s| s.as_str())
-        .unwrap_or_else(|| {
-            eprintln!("Usage: <file_extension> [directory]\nExample: code_guessr rs ./src\nTry your knowledge of the codebase, searches the directory recursively\nfor all files with the given extension.");
-            std::process::exit(1);
-        });
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--help" | "-h" => {
+                println!("{usage}");
+                return;
+            }
+            "--min-chars" | "-m" => {
+                let Some(value) = args.next() else {
+                    eprintln!("Missing value for {arg}\n\n{usage}");
+                    std::process::exit(2);
+                };
+                min_chars = value.parse().unwrap_or_else(|_| {
+                    eprintln!("Invalid minimum character count: {value}\n\n{usage}");
+                    std::process::exit(2);
+                });
+            }
+            _ if arg.starts_with("--min-chars=") => {
+                let value = &arg["--min-chars=".len()..];
+                min_chars = value.parse().unwrap_or_else(|_| {
+                    eprintln!("Invalid minimum character count: {value}\n\n{usage}");
+                    std::process::exit(2);
+                });
+            }
+            _ => positional.push(arg),
+        }
+    }
 
-    let dir: PathBuf = env::args_os()
-        .nth(2)
+    if positional.is_empty() || positional.len() > 2 {
+        eprintln!("{usage}");
+        std::process::exit(2);
+    }
+
+    let ext = positional[0].as_str();
+    let dir = positional
+        .get(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
 
-    if let Some(dir_path) = PathBuf::from(dir).canonicalize().ok() {
+    if let Some(dir_path) = dir.canonicalize().ok() {
         if !dir_path.is_dir() {
             eprintln!("Directory path is not valid");
             return;
         }
 
-        if let Some((line, other_lines)) = pick_line(&dir_path, ext, 40) {
+        if let Some((line, other_lines)) = pick_line(&dir_path, ext, min_chars) {
             let time = std::time::Instant::now();
             match file_browser(&dir_path, &ext, &line, &other_lines) {
                 Ok(InspectorReturn::Quit) => {
