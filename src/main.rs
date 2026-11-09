@@ -1,19 +1,18 @@
-use std::path::PathBuf;
-use std::io::{stdout, Write};
-use crossterm::cursor;
-use rand::prelude::IndexedRandom;
-use std::env;
-use walkdir::WalkDir;
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
     event::{self, Event, KeyCode, KeyEventKind},
     execute, queue,
+    style::{Print, Stylize},
     terminal::{
-        self, disable_raw_mode, enable_raw_mode, Clear, ClearType,
-        EnterAlternateScreen, LeaveAlternateScreen,
+        self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+        enable_raw_mode,
     },
-    style::{Print, Stylize}
 };
+use rand::prelude::IndexedRandom;
+use std::env;
+use std::io::{Write, stdout};
+use std::path::PathBuf;
+use walkdir::WalkDir;
 
 struct TerminalGuard;
 
@@ -32,7 +31,6 @@ impl Drop for TerminalGuard {
     }
 }
 
-
 #[derive(Clone, Debug)]
 struct SourceLine {
     source: PathBuf,
@@ -40,12 +38,18 @@ struct SourceLine {
     line: String,
 }
 
-fn pick_line(dir: &PathBuf, path_extension: &str, min_chars: usize) -> Option<SourceLine> {
+fn pick_line(
+    dir: &PathBuf,
+    path_extension: &str,
+    min_chars: usize,
+) -> Option<(SourceLine, Vec<SourceLine>)> {
     let files = WalkDir::new(dir)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
-        .filter(|e| e.path().extension().is_some() && e.path().extension().unwrap() == path_extension)
+        .filter(|e| {
+            e.path().extension().is_some() && e.path().extension().unwrap() == path_extension
+        })
         .collect::<Vec<_>>();
     let mut lines: Vec<SourceLine> = Vec::new();
 
@@ -65,7 +69,23 @@ fn pick_line(dir: &PathBuf, path_extension: &str, min_chars: usize) -> Option<So
 
     let picked_line = lines.choose(&mut rand::rng());
     if let Some(line) = picked_line {
-        return Some(line.clone());
+        let content = std::fs::read_to_string(&line.source).ok()?;
+        let other_lines: Vec<&str> = content
+            .lines()
+            .skip((line.line_number - 2).max(0))
+            .take(3)
+            .collect::<Vec<&str>>();
+        return Some((
+            line.clone(),
+            other_lines
+                .into_iter()
+                .map(|l| SourceLine {
+                    source: line.source.clone(),
+                    line_number: line.line_number,
+                    line: l.to_string(),
+                })
+                .collect(),
+        ));
     }
     None
 }
@@ -106,7 +126,11 @@ fn file_inspector(path: &PathBuf, source_line: &SourceLine) -> std::io::Result<I
                 queue!(out, MoveTo(0, row as u16), Print(shown))?;
             }
         }
-        let pct = if max_top == 0 { 100 } else { top * 100 / max_top };
+        let pct = if max_top == 0 {
+            100
+        } else {
+            top * 100 / max_top
+        };
         let target: String = source_line.line.chars().take(w as usize).collect();
         let status = format!(
             "{}  line {}/{}  {}%  (q to go back) (Enter to submit)",
@@ -118,8 +142,10 @@ fn file_inspector(path: &PathBuf, source_line: &SourceLine) -> std::io::Result<I
         let status: String = status.chars().take(w as usize).collect();
         queue!(
             out,
-            MoveTo(0, h.saturating_sub(2)), Print(target),
-            MoveTo(0, h.saturating_sub(1)), Print(status.reverse())
+            MoveTo(0, h.saturating_sub(2)),
+            Print(target),
+            MoveTo(0, h.saturating_sub(1)),
+            Print(status.reverse())
         )?;
         out.flush()?;
 
@@ -138,7 +164,7 @@ fn file_inspector(path: &PathBuf, source_line: &SourceLine) -> std::io::Result<I
                     } else {
                         return Ok(InspectorReturn::WrongSubmit);
                     }
-                },
+                }
                 _ => {}
             },
             _ => {} // resize and other events just trigger a redraw
@@ -147,7 +173,12 @@ fn file_inspector(path: &PathBuf, source_line: &SourceLine) -> std::io::Result<I
     Ok(InspectorReturn::Quit)
 }
 
-fn file_browser(dir_path: &PathBuf, ext: &str, source_line: &SourceLine) -> std::io::Result<InspectorReturn> {
+fn file_browser(
+    dir_path: &PathBuf,
+    ext: &str,
+    source_line: &SourceLine,
+    other_lines: &Vec<SourceLine>,
+) -> std::io::Result<InspectorReturn> {
     let _guard = TerminalGuard::new()?;
     let mut out = stdout();
     let mut current_dir = dir_path.clone();
@@ -157,16 +188,36 @@ fn file_browser(dir_path: &PathBuf, ext: &str, source_line: &SourceLine) -> std:
         execute!(out, Clear(ClearType::All), MoveTo(0, 0))?;
         // Raw mode needs explicit carriage returns
         write!(out, "----- Looking for line ----\r\n")?;
-        write!(out, "{}\r\n", source_line.line)?;
+        let mut i = 0;
+        for other_line in other_lines {
+            if i == 1 {
+                write!(out, "{}\r\n", other_line.line.to_string().reverse())?;
+            } else {
+                write!(out, "{}\r\n", other_line.line.to_string())?;
+            }
+            i += 1;
+        }
         write!(out, "---------------------------\r\n")?;
         write!(out, "{}\r\n", current_dir.display())?;
         let mut idx = 0;
-        let entries = WalkDir::new(&current_dir).min_depth(1).max_depth(1).into_iter().filter_map(|e| e.ok()); 
+        let entries = WalkDir::new(&current_dir)
+            .min_depth(1)
+            .max_depth(1)
+            .into_iter()
+            .filter_map(|e| e.ok());
         let mut selected_entry: Option<walkdir::DirEntry> = None;
         for entry in entries {
-            if (entry.file_type().is_file() && entry.path().extension().is_some() && entry.path().extension().unwrap() == ext) || entry.file_type().is_dir() {
+            if (entry.file_type().is_file()
+                && entry.path().extension().is_some()
+                && entry.path().extension().unwrap() == ext)
+                || entry.file_type().is_dir()
+            {
                 if idx == current_selection_idx {
-                    write!(out, "> {}\r\n", entry.path().display().to_string().reverse())?;
+                    write!(
+                        out,
+                        "> {}\r\n",
+                        entry.path().display().to_string().reverse()
+                    )?;
                     selected_entry = Some(entry);
                 } else {
                     write!(out, "  {}\r\n", entry.path().display())?;
@@ -194,9 +245,11 @@ fn file_browser(dir_path: &PathBuf, ext: &str, source_line: &SourceLine) -> std:
                             current_selection_idx = 0;
                         } else {
                             match file_inspector(&entry.path().to_path_buf(), source_line)? {
-                                InspectorReturn::Quit => {continue},
+                                InspectorReturn::Quit => continue,
                                 InspectorReturn::Submit => return Ok(InspectorReturn::Submit),
-                                InspectorReturn::WrongSubmit => return Ok(InspectorReturn::WrongSubmit),
+                                InspectorReturn::WrongSubmit => {
+                                    return Ok(InspectorReturn::WrongSubmit);
+                                }
                             }
                         }
                     }
@@ -221,7 +274,7 @@ fn main() {
     let ext = args.get(1)
         .map(|s| s.as_str())
         .unwrap_or_else(|| {
-            eprintln!("File extension is required");
+            eprintln!("Usage: <file_extension> [directory]\nExample: code_guessr rs ./src\nTry your knowledge of the codebase, searches the directory recursively\nfor all files with the given extension.");
             std::process::exit(1);
         });
 
@@ -236,24 +289,34 @@ fn main() {
             return;
         }
 
-        if let Some(line) = pick_line(&dir_path, ext, 40) {
+        if let Some((line, other_lines)) = pick_line(&dir_path, ext, 40) {
             let time = std::time::Instant::now();
-            match file_browser(&dir_path, &ext, &line) {
+            match file_browser(&dir_path, &ext, &line, &other_lines) {
                 Ok(InspectorReturn::Quit) => {
                     println!("Exited Code Guessr");
-                },
+                }
                 Ok(InspectorReturn::Submit) => {
-                    println!("{}","Line found!".green());
+                    println!("{}", "Line found!".green());
                     println!("Source line:");
-                    println!("{}:{} {}", line.source.display(), line.line_number.to_string().yellow(), line.line);
+                    println!(
+                        "{}:{} {}",
+                        line.source.display(),
+                        line.line_number.to_string().yellow(),
+                        line.line
+                    );
                     println!("Time taken: {:?}", time.elapsed());
-                },
+                }
                 Ok(InspectorReturn::WrongSubmit) => {
-                    println!("{}","WRONG LINE BRO!".red());
+                    println!("{}", "WRONG LINE BRO!".red());
                     println!("Source line:");
-                    println!("{}:{} {}", line.source.display(), line.line_number.to_string().yellow(), line.line);
+                    println!(
+                        "{}:{} {}",
+                        line.source.display(),
+                        line.line_number.to_string().yellow(),
+                        line.line
+                    );
                     println!("Time taken: {:?}", time.elapsed());
-                },
+                }
                 Err(e) => eprintln!("{e}"),
             }
         } else {

@@ -2,8 +2,16 @@
 name = "code_guessr"
 version = "0.1.0"
 edition = "2024"
+description = "Test knowledge of your codebase, find the given line in valid files"
+license = "MIT"
 
 [dependencies]
 crossterm = "0.29.0"
 rand = "0.10.3"
 walkdir = "2.5.0"
+
+[profile.release]
+opt-level = "z"     # optimize for size ("s" is less aggressive)
+lto = true          # link-time optimization
+codegen-units = 1   # better optimization, slower build
+panic = "abort"     # drops unwinding machinery
